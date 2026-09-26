@@ -66,14 +66,14 @@ static uint8_t bin_from_colour(const char *s)
     return BIN_OTHER;
 }
 
-static int date_key(const bin_collection_t *c)
+uint32_t bin_collection_date_key(const bin_collection_t *c)
 {
     return c->year * 10000 + c->month * 100 + c->day;
 }
 
 static int compare_dates(const void *a, const void *b)
 {
-    return date_key(a) - date_key(b);
+    return (int)bin_collection_date_key(a) - (int)bin_collection_date_key(b);
 }
 
 int bin_calendar_parse(const char *html, bin_calendar_t *cal)
@@ -112,9 +112,9 @@ int bin_calendar_parse(const char *html, bin_calendar_t *cal)
 
 const bin_collection_t *bin_calendar_next(const bin_calendar_t *cal, const struct tm *today)
 {
-    int today_key = (today->tm_year + 1900) * 10000 + (today->tm_mon + 1) * 100 + today->tm_mday;
+    uint32_t today_key = (today->tm_year + 1900) * 10000 + (today->tm_mon + 1) * 100 + today->tm_mday;
     for (int i = 0; i < cal->count; i++) {
-        if (date_key(&cal->collections[i]) >= today_key) {
+        if (bin_collection_date_key(&cal->collections[i]) >= today_key) {
             return &cal->collections[i];
         }
     }

@@ -39,6 +39,9 @@ int bin_calendar_parse(const char *html, bin_calendar_t *cal);
 // The first collection on or after `today`, or NULL if there isn't one
 const bin_collection_t *bin_calendar_next(const bin_calendar_t *cal, const struct tm *today);
 
+// The collection's date as a number, yyyymmdd
+uint32_t bin_collection_date_key(const bin_collection_t *c);
+
 // Whole days from `today` to the collection: 0 = today, 1 = tomorrow
 int bin_collection_days_until(const bin_collection_t *c, const struct tm *today);
 
@@ -46,6 +49,9 @@ int bin_collection_days_until(const bin_collection_t *c, const struct tm *today)
 // allows it, otherwise plain HTTP. Needs WiFi and the correct time (for the
 // HTTPS certificate check). Returns 0 on success.
 int bin_calendar_fetch(const char *uprn, bin_calendar_t *cal);
+
+// "HTTPS" or "HTTP" for the last successful download, or NULL if none yet
+const char *bin_calendar_protocol(void);
 
 // Keep a copy of the calendar in NVS, so it survives power cuts and outages
 // of the council's website

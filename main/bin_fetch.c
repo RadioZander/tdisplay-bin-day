@@ -24,6 +24,8 @@ static const char *TAG = "bin_calendar";
 // The page is about 20 KB
 #define MAX_PAGE_SIZE (48 * 1024)
 
+static const char *s_protocol;
+
 #define NVS_NAMESPACE "bin_calendar"
 #define NVS_KEY       "calendar"
 
@@ -120,12 +122,23 @@ done:
 
 int bin_calendar_fetch(const char *uprn, bin_calendar_t *cal)
 {
+    const char *protocol = "HTTPS";
     fetch_result_t result = fetch_url(HTTPS_URL, uprn, cal);
     if (result == FETCH_CONNECT_FAILED) {
         ESP_LOGI(TAG, "Falling back to HTTP");
+        protocol = "HTTP";
         result = fetch_url(HTTP_URL, uprn, cal);
     }
-    return result == FETCH_OK ? 0 : -1;
+    if (result != FETCH_OK) {
+        return -1;
+    }
+    s_protocol = protocol;
+    return 0;
+}
+
+const char *bin_calendar_protocol(void)
+{
+    return s_protocol;
 }
 
 void bin_calendar_save(const bin_calendar_t *cal)

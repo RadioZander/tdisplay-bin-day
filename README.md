@@ -4,13 +4,39 @@ A bin collection reminder for the LilyGO T-Display and T-Display-S3. It download
 
 ## What it shows
 
-- **Headline**: "Bins out tonight" the day before a collection, "Collection today" on the day, otherwise the date of the next collection with the number of days to go underneath
-- **Bins**: a coloured bin for each one being collected: green (refuse), blue-top (recycling), orange-top food caddy and brown (garden waste)
+- **Headline**: "Bins out tonight" the day before a collection (from the time set by the Reminder setting, "Tomorrow" before then), "Collection today" on the day, otherwise the date of the next collection with the number of days to go underneath
+- **Bins**: a coloured bin for each one being collected: green (refuse), blue (recycling), orange-top food caddy and brown (garden waste)
+- **Bins are out**: once you've put the bins out, press CHANGE and the headline turns to a green "Bins are out" until collection day. Press it again to undo
 - **Changes**: if the council marks a collection as different from the usual arrangements (shown in bold on their site, for example over Christmas), "(changed)" appears in red
-- **Along the bottom**: the collection after the next one
+- **Along the bottom**: a reminder to press CHANGE while the bins need putting out, otherwise the collection after the next one
 - **Along the top**: WiFi status and when the calendar was last downloaded
 
 The calendar is downloaded at start-up and every 6 hours after that, or every 15 minutes after a failed attempt. The last good copy is kept in flash, so the device keeps working through power cuts and when the council's website is down.
+
+## Settings menu
+
+Outside the menu, CHANGE marks the bins as out (see above). If the screen is off for the night, the first press of either button just lights it up for 30 seconds.
+
+| Action | What it does |
+|---|---|
+| Hold MENU (0.8 s) | Open the settings menu. A yellow bar at the top shows the item and its value |
+| Press MENU | Go to the next item |
+| Press CHANGE | Step the value forwards. Changes show straight away |
+| Hold CHANGE | Step the value backwards |
+| Hold MENU again | Save and close. The menu also saves and closes after 10 seconds without a press (60 seconds on Info) |
+
+| Item | Values |
+|---|---|
+| Brightness | 10%, 25%, 50%, 75% or 100% |
+| Night | Off, Dim (10%) or Screen off, between the Night from and Night until times. The screen stays at full brightness while the bins need putting out |
+| Night from, Night until | Any hour |
+| Reminder | When "Bins out tonight" starts the day before a collection: all day, or from any hour |
+| Screen | Normal or Flipped (rotated 180 degrees) |
+| Preview | Shows the evening before, and the day of, the next two collections, changing every 5 seconds. Not saved, so a restart turns it off |
+| Update | Press CHANGE to download the calendar now |
+| Info | IP address, WiFi signal, last and next update, number of collections saved and the firmware build date |
+
+On the T-Display-S3, MENU is the BOOT button (GPIO0) and CHANGE is GPIO14. On the T-Display they're GPIO0 and GPIO35.
 
 ## How it gets the calendar
 
@@ -51,7 +77,7 @@ Requires ESP-IDF v6.1.
    idf.py set-target esp32     # T-Display
    idf.py set-target esp32s3   # T-Display-S3
    ```
-5. Optionally, change the NTP server, timezone or brightness:
+5. Optionally, change the NTP server or timezone:
    ```bash
    idf.py menuconfig
    ```
