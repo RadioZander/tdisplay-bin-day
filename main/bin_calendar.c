@@ -110,6 +110,74 @@ int bin_calendar_parse(const char *html, bin_calendar_t *cal)
     return cal->count;
 }
 
+// The postcode search page lists addresses like this, with CRLF line endings:
+//   <option value="" selected="selected" disabled="disabled">Please select address...</option>
+//   <option value='010000000001'>
+//                 1 Example Road Horsham West Sussex RH12 0XX
+//   </option>
+int bin_address_parse(const char *html, bin_address_cb_t found, void *ctx)
+{
+    static const struct {
+        const char *entity;
+        char c;
+    } entities[] = {{"&amp;", '&'}, {"&#39;", '\''}, {"&quot;", '"'}, {"&nbsp;", ' '}};
+
+    int count = 0;
+    for (const char *p = strstr(html, "<option"); p; p = strstr(p + 7, "<option")) {
+        const char *tag_end = strchr(p, '>');
+        const char *value = strstr(p, "value=");
+        if (!tag_end || !value || value > tag_end) {
+            continue;
+        }
+        value += 6;
+        if (*value == '\'' || *value == '"') {
+            value++;
+        }
+        char uprn[16];
+        size_t len = strspn(value, "0123456789");
+        if (len == 0 || len >= sizeof(uprn)) {
+            continue; // the "Please select address..." placeholder
+        }
+        memcpy(uprn, value, len);
+        uprn[len] = '\0';
+
+        // The address, with runs of whitespace (including line breaks)
+        // collapsed to single spaces
+        char address[BIN_ADDRESS_MAX_LEN];
+        size_t n = 0;
+        bool space = false;
+        for (const char *s = tag_end + 1; *s && *s != '<' && n < sizeof(address) - 1; s++) {
+            char c = *s;
+            if (c == '&') {
+                for (size_t i = 0; i < sizeof(entities) / sizeof(entities[0]); i++) {
+                    size_t elen = strlen(entities[i].entity);
+                    if (strncmp(s, entities[i].entity, elen) == 0) {
+                        c = entities[i].c;
+                        s += elen - 1;
+                        break;
+                    }
+                }
+            }
+            if (isspace((unsigned char)c)) {
+                space = n > 0;
+                continue;
+            }
+            if (space && n < sizeof(address) - 2) {
+                address[n++] = ' ';
+            }
+            space = false;
+            address[n++] = c;
+        }
+        address[n] = '\0';
+        if (n == 0) {
+            continue;
+        }
+        found(uprn, address, ctx);
+        count++;
+    }
+    return count;
+}
+
 const bin_collection_t *bin_calendar_next(const bin_calendar_t *cal, const struct tm *today)
 {
     uint32_t today_key = (today->tm_year + 1900) * 10000 + (today->tm_mon + 1) * 100 + today->tm_mday;

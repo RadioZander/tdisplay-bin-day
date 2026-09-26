@@ -7,5 +7,8 @@
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
 
+# The setup portal's web and DNS servers need more sockets than the default 10
+CONFIG_LWIP_MAX_SOCKETS=16
+
 # WiFi plus HTTPS only just fits the default 1 MB app partition
 CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

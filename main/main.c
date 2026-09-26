@@ -8,22 +8,19 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_app_desc.h"
-#include "esp_event.h"
 #include "esp_log.h"
-#include "esp_netif.h"
 #include "esp_netif_sntp.h"
+#include "esp_system.h"
 #include "esp_wifi.h"
 #include "nvs_flash.h"
 #include "bin_calendar.h"
 #include "buttons.h"
+#include "config.h"
 #include "display.h"
+#include "portal.h"
 #include "settings.h"
+#include "wifi.h"
 
-#if __has_include("secrets.h")
-#include "secrets.h"
-#else
-#error "Missing main/secrets.h - copy main/secrets.example.h to main/secrets.h and add your WiFi details and UPRN"
-#endif
 
 static const char *TAG = "bin_day";
 
@@ -34,6 +31,9 @@ static const char *TAG = "bin_day";
 #define INFO_TIMEOUT_MS    60000 // the info page stays up longer, for reading
 #define WAKE_MS            30000 // a button press lights a dark screen for this long
 #define NIGHT_DIM_PERCENT  10
+#define JOIN_TIMEOUT_MS    (2 * 60 * 1000)  // at start-up, before offering setup
+#define PORTAL_IDLE_MS     (10 * 60 * 1000) // setup gives up if nobody joins
+#define PORTAL_RESTART_MS  3000             // time to read the result before restarting
 
 // Bin colours
 #define COLOR_BIN_GREEN      RGB565(40, 160, 60)
@@ -59,9 +59,8 @@ static const struct {
 };
 #define NUM_BIN_STYLES (sizeof(bin_styles) / sizeof(bin_styles[0]))
 
-static volatile bool s_wifi_connected;
 static volatile bool s_time_synced;
-static char s_ip[16] = "";
+static device_config_t s_config;
 
 static bin_calendar_t s_calendar;
 static bool s_fetch_failed;
@@ -74,43 +73,6 @@ static bin_settings_t s_settings;
 static bool s_preview; // not saved, so a restart always goes back to normal
 static int s_brightness_shown = -1;
 static TickType_t s_wake_until;
-
-static void wifi_event_handler(void *arg, esp_event_base_t base, int32_t id, void *data)
-{
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
-    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        s_wifi_connected = false;
-        s_ip[0] = '\0';
-        ESP_LOGW(TAG, "WiFi disconnected, retrying...");
-        esp_wifi_connect();
-    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t *event = data;
-        snprintf(s_ip, sizeof(s_ip), IPSTR, IP2STR(&event->ip_info.ip));
-        ESP_LOGI(TAG, "Got IP: %s", s_ip);
-        s_wifi_connected = true;
-    }
-}
-
-static void wifi_init(void)
-{
-    ESP_ERROR_CHECK(esp_netif_init());
-    ESP_ERROR_CHECK(esp_event_loop_create_default());
-    esp_netif_create_default_wifi_sta();
-
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-    ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event_handler, NULL));
-    ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event_handler, NULL));
-
-    wifi_config_t wifi_config = {0};
-    strlcpy((char *)wifi_config.sta.ssid, WIFI_SSID, sizeof(wifi_config.sta.ssid));
-    strlcpy((char *)wifi_config.sta.password, WIFI_PASSWORD, sizeof(wifi_config.sta.password));
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
-    ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG, "Connecting to \"%s\"", WIFI_SSID);
-}
 
 static void time_sync_cb(struct timeval *tv)
 {
@@ -132,21 +94,22 @@ static void sntp_init_client(void)
 
 static void draw_status_screen(int dots)
 {
-    char buf[32];
+    char buf[48];
     display_clear(COLOR_BLACK);
     // Positions as a fraction of the screen height, to suit either board
     display_text_centered(DISPLAY_HEIGHT * 15 / 100, "Bin Day", 3, COLOR_CYAN);
 
-    const char *msg = s_wifi_connected ? "Syncing time" : "Connecting WiFi";
+    const char *msg = wifi_connected() ? "Syncing time" : "Connecting WiFi";
     snprintf(buf, sizeof(buf), "%s%.*s", msg, dots, "...");
     display_text(12, DISPLAY_HEIGHT * 52 / 100, buf, 2, COLOR_WHITE);
 
-    if (s_wifi_connected) {
-        snprintf(buf, sizeof(buf), "IP %s", s_ip);
+    if (wifi_connected()) {
+        snprintf(buf, sizeof(buf), "IP %s", wifi_ip());
     } else {
-        snprintf(buf, sizeof(buf), "SSID %s", WIFI_SSID);
+        snprintf(buf, sizeof(buf), "SSID %s", s_config.ssid);
     }
-    display_text_centered(DISPLAY_HEIGHT * 82 / 100, buf, 1, COLOR_GREY);
+    display_text_centered(DISPLAY_HEIGHT * 78 / 100, buf, 1, COLOR_GREY);
+    display_text_centered(DISPLAY_HEIGHT - 12, "Hold MENU for setup", 1, COLOR_GREY);
     display_flush();
 }
 
@@ -253,12 +216,13 @@ typedef enum {
     ITEM_SCREEN,
     ITEM_PREVIEW,
     ITEM_UPDATE,
+    ITEM_SETUP,
     ITEM_INFO,
     NUM_ITEMS,
 } menu_item_t;
 
 static const char *item_names[NUM_ITEMS] = {
-    "Brightness", "Night", "Night from", "Night until", "Reminder", "Screen", "Preview", "Update", "Info",
+    "Brightness", "Night", "Night from", "Night until", "Reminder", "Screen", "Preview", "Update", "Setup", "Info",
 };
 static const char *night_names[NUM_NIGHT_MODES] = {"Off", "Dim", "Screen off"};
 
@@ -266,6 +230,7 @@ static bool s_menu_open;
 static menu_item_t s_menu_item;
 static TickType_t s_menu_last_input;
 static const char *s_update_result; // shown by the Update item after a manual update
+static bool s_setup_requested;      // from the Setup menu item
 
 static bool is_night(const struct tm *now)
 {
@@ -337,6 +302,9 @@ static void menu_step_value(int direction)
             s_update_result = NULL;
         }
         break;
+    case ITEM_SETUP:
+        s_setup_requested = direction > 0;
+        break;
     default:
         break;
     }
@@ -372,6 +340,9 @@ static void menu_value_text(char *buf, size_t len)
         break;
     case ITEM_UPDATE:
         snprintf(buf, len, "%s", s_updating ? "Updating..." : s_update_result ? s_update_result : "Press CHANGE");
+        break;
+    case ITEM_SETUP:
+        snprintf(buf, len, "Press CHANGE");
         break;
     default:
         buf[0] = '\0';
@@ -453,7 +424,7 @@ static void draw_menu_bar(void)
 static void draw_status_line(void)
 {
     char buf[40];
-    display_text(4, 4, s_wifi_connected ? "WiFi OK" : "WiFi lost", 1, s_wifi_connected ? COLOR_GREEN : COLOR_RED);
+    display_text(4, 4, wifi_connected() ? "WiFi OK" : "WiFi lost", 1, wifi_connected() ? COLOR_GREEN : COLOR_RED);
 
     uint16_t color = COLOR_GREY;
     if (s_preview) {
@@ -482,8 +453,8 @@ static void draw_info(void)
     int n = 0;
     struct tm tm;
 
-    if (s_wifi_connected) {
-        snprintf(lines[n++], sizeof(lines[0]), "IP %s", s_ip);
+    if (wifi_connected()) {
+        snprintf(lines[n++], sizeof(lines[0]), "IP %s", wifi_ip());
         wifi_ap_record_t ap;
         if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
             snprintf(lines[n++], sizeof(lines[0]), "Signal %d dBm", ap.rssi);
@@ -616,10 +587,72 @@ static void draw_screen(const bin_status_t *st)
     display_flush();
 }
 
+static void draw_portal_screen(const char *reason, const char *status)
+{
+    char buf[40];
+    display_clear(COLOR_BLACK);
+    display_text(4, 4, reason, 1, COLOR_GREY);
+    if (config_complete(&s_config)) {
+        const char *cancel = "Hold MENU to cancel";
+        display_text(DISPLAY_WIDTH - 4 - display_text_width(cancel, 1), 4, cancel, 1, COLOR_GREY);
+    }
+    display_text_centered(DISPLAY_HEIGHT * 12 / 100, "Setup", BOARD_HEADLINE_SCALE, COLOR_CYAN);
+    if (!portal_ssid()[0]) {
+        display_text_centered(DISPLAY_HEIGHT * 45 / 100, "Starting...", BOARD_BODY_SCALE, COLOR_WHITE);
+        display_flush();
+        return;
+    }
+    display_text_centered(DISPLAY_HEIGHT * 32 / 100, "On your phone, join the WiFi network", 1, COLOR_GREY);
+    display_text_centered(DISPLAY_HEIGHT * 41 / 100, portal_ssid(), BOARD_BODY_SCALE, COLOR_YELLOW);
+    snprintf(buf, sizeof(buf), "Password %s", portal_password());
+    display_text_centered(DISPLAY_HEIGHT * 54 / 100, buf, BOARD_BODY_SCALE, COLOR_WHITE);
+    display_text_centered(DISPLAY_HEIGHT * 68 / 100, "The setup page opens by itself,", 1, COLOR_GREY);
+    display_text_centered(DISPLAY_HEIGHT * 75 / 100, "or go to http://" PORTAL_ADDRESS, 1, COLOR_GREY);
+    display_text_centered(DISPLAY_HEIGHT - 16, status, 1, COLOR_GREEN);
+    display_flush();
+}
+
+// Runs the setup portal until the page saves or cancels, then restarts.
+// `give_up` restarts it (to try the saved network again) if nobody joins
+// the setup network for PORTAL_IDLE_MS. Never returns.
+static void run_portal(const char *reason, bool give_up, QueueHandle_t buttons)
+{
+    ESP_LOGI(TAG, "Setup: %s", reason);
+    apply_brightness(s_settings.brightness);
+    draw_portal_screen(reason, "");
+    portal_start(&s_config);
+
+    TickType_t last_joined = xTaskGetTickCount();
+    TickType_t finished_at = 0;
+    while (true) {
+        TickType_t now = xTaskGetTickCount();
+        draw_portal_screen(reason, portal_status());
+        if (wifi_setup_clients() > 0) {
+            last_joined = now;
+        }
+        if (portal_finished() && !finished_at) {
+            finished_at = now;
+        }
+        if (finished_at && now - finished_at > pdMS_TO_TICKS(PORTAL_RESTART_MS)) {
+            esp_restart();
+        }
+        if (give_up && now - last_joined > pdMS_TO_TICKS(PORTAL_IDLE_MS)) {
+            ESP_LOGI(TAG, "Nobody joined the setup network, restarting");
+            esp_restart();
+        }
+        button_event_t ev;
+        if (xQueueReceive(buttons, &ev, pdMS_TO_TICKS(500)) && ev.button == BUTTON_MENU && ev.long_press &&
+            config_complete(&s_config)) {
+            ESP_LOGI(TAG, "Setup cancelled");
+            esp_restart();
+        }
+    }
+}
+
 static void update_calendar(time_t now)
 {
     s_updating = true;
-    bool ok = bin_calendar_fetch(BIN_UPRN, &s_calendar) == 0;
+    bool ok = bin_calendar_fetch(s_config.uprn, &s_calendar) == 0;
     s_updating = false;
     s_last_attempt = now;
     s_fetch_failed = !ok;
@@ -639,21 +672,37 @@ void app_main(void)
     ESP_ERROR_CHECK(ret);
 
     settings_load(&s_settings);
+    config_load(&s_config);
     display_init(s_settings.brightness);
     display_set_flipped(s_settings.flipped);
     s_brightness_shown = s_settings.brightness;
     bin_calendar_load(&s_calendar);
     wifi_init();
     sntp_init_client();
+    QueueHandle_t buttons = buttons_init();
 
-    int dots = 0;
-    while (!s_time_synced) {
-        draw_status_screen(dots);
-        dots = (dots + 1) % 4;
-        vTaskDelay(pdMS_TO_TICKS(500));
+    if (!config_complete(&s_config)) {
+        run_portal("First-time setup", false, buttons);
     }
 
-    QueueHandle_t buttons = buttons_init();
+    // Offer setup if the saved network can't be joined, or on a long press
+    // of MENU
+    wifi_join(s_config.ssid, s_config.password, -1);
+    TickType_t joining_since = xTaskGetTickCount();
+    int dots = 0;
+    while (!s_time_synced) {
+        char reason[48];
+        if (!wifi_connected() && xTaskGetTickCount() - joining_since > pdMS_TO_TICKS(JOIN_TIMEOUT_MS)) {
+            snprintf(reason, sizeof(reason), "Can't join %s", s_config.ssid);
+            run_portal(reason, true, buttons);
+        }
+        draw_status_screen(dots);
+        dots = (dots + 1) % 4;
+        button_event_t ev;
+        if (xQueueReceive(buttons, &ev, pdMS_TO_TICKS(500)) && ev.button == BUTTON_MENU && ev.long_press) {
+            run_portal("Setup", true, buttons);
+        }
+    }
     bin_status_t shown = {0};
     int shown_step = -1;
     bool shown_wifi = false;
@@ -669,6 +718,10 @@ void app_main(void)
             menu_close();
             redraw = true;
         }
+        if (s_setup_requested) {
+            menu_close();
+            run_portal("Setup", true, buttons);
+        }
 
         time_t now = time(NULL);
         struct tm real_today;
@@ -679,12 +732,12 @@ void app_main(void)
         }
         bin_status_t st = get_status(&today);
 
-        if (s_update_requested && !s_wifi_connected) {
+        if (s_update_requested && !wifi_connected()) {
             s_update_requested = false;
             s_update_result = "No WiFi";
             redraw = true;
         }
-        if (s_wifi_connected && (now >= s_next_fetch || s_update_requested)) {
+        if (wifi_connected() && (now >= s_next_fetch || s_update_requested)) {
             bool manual = s_update_requested;
             s_update_requested = false;
             s_updating = true;
@@ -701,9 +754,9 @@ void app_main(void)
         // Redraw each minute, which also moves on to the next day at
         // midnight, or each scene in preview mode
         int step = s_preview ? now / PREVIEW_SCENE_S : real_today.tm_min;
-        if (redraw || step != shown_step || s_wifi_connected != shown_wifi) {
+        if (redraw || step != shown_step || wifi_connected() != shown_wifi) {
             shown_step = step;
-            shown_wifi = s_wifi_connected;
+            shown_wifi = wifi_connected();
             draw_screen(&st);
             shown = st;
         }

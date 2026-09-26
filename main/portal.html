@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bin Day setup</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; max-width: 28rem; margin: 0 auto; padding: 1rem; background: #111; color: #eee; }
+  h1 { font-size: 1.4rem; margin: .5rem 0 1rem; }
+  h2 { font-size: 1.1rem; margin: 1.5rem 0 .5rem; }
+  label { display: block; margin-top: .6rem; font-size: .9rem; color: #bbb; }
+  input, select, button { display: block; width: 100%; box-sizing: border-box; font-size: 1rem; padding: .65rem; margin-top: .3rem; border-radius: 6px; border: 1px solid #555; background: #222; color: #eee; }
+  button { background: #2a8a4a; border: 0; color: #fff; font-weight: 600; margin-top: .8rem; }
+  button.secondary { background: #3a3a3a; font-weight: 400; }
+  button:disabled { opacity: .5; }
+  details { margin-top: .8rem; color: #bbb; font-size: .9rem; }
+  .msg { min-height: 1.2em; color: #fc6; margin: .6rem 0 0; }
+  .ok { color: #6d8; margin: .4rem 0; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<h1>Bin Day setup</h1>
+
+<section>
+  <h2>1. Your WiFi</h2>
+  <p id="connected" class="ok" hidden></p>
+  <button id="change" class="secondary" hidden>Use a different network</button>
+  <div id="wifi-form">
+    <label>Network <select id="network"></select></label>
+    <label id="other-label" hidden>Network name <input id="other" autocomplete="off" autocapitalize="none"></label>
+    <label>Password <input id="password" type="password" autocomplete="off"></label>
+    <button id="join">Connect</button>
+    <button id="scan" class="secondary">Scan again</button>
+  </div>
+  <p id="wifi-msg" class="msg"></p>
+</section>
+
+<section id="address" hidden>
+  <h2>2. Your address</h2>
+  <label>Postcode <input id="postcode" autocapitalize="characters" autocomplete="postal-code"></label>
+  <button id="find" class="secondary">Find addresses</button>
+  <label id="addresses-label" hidden>Address <select id="addresses"></select></label>
+  <details>
+    <summary>Or enter a UPRN</summary>
+    <input id="uprn" inputmode="numeric" placeholder="Up to 12 digits">
+  </details>
+  <p id="address-msg" class="msg"></p>
+  <button id="save">Save and restart</button>
+</section>
+
+<button id="cancel" class="secondary">Cancel setup</button>
+
+<script>
+const $ = id => document.getElementById(id);
+let changing = false;
+
+async function api(path, form) {
+  const options = form ? {method: 'POST', body: new URLSearchParams(form)} : {};
+  const response = await fetch(path, options);
+  return response.json();
+}
+
+function showNetworks(state) {
+  const select = $('network');
+  select.innerHTML = '';
+  for (const n of state.networks) {
+    select.add(new Option(n.ssid + (n.open ? ' (open)' : ''), n.ssid, false, n.ssid === state.ssid));
+  }
+  select.add(new Option('Other network...', ''));
+  showOther();
+}
+
+function showOther() {
+  $('other-label').hidden = $('network').value !== '';
+}
+
+function finish(message) {
+  document.body.innerHTML = '<h1>Bin Day setup</h1><p>' + message + '</p>';
+}
+
+// The page is drawn from the device's state, so it picks up where it left
+// off if the phone drops off the setup network and comes back
+async function refresh() {
+  let state;
+  try {
+    state = await api('/api/state');
+  } catch (e) {
+    setTimeout(refresh, 2000);
+    return;
+  }
+  if (!$('network').options.length) {
+    showNetworks(state);
+  }
+  const connected = state.connected && !changing;
+  $('connected').hidden = !connected;
+  $('connected').textContent = 'Connected to ' + state.ssid;
+  $('change').hidden = !connected;
+  $('wifi-form').hidden = connected;
+  $('join').disabled = !!state.joining;
+  $('wifi-msg').textContent = state.joining ? 'Connecting to ' + state.joining + '...' : state.error;
+  $('address').hidden = !state.connected || !!state.joining;
+  if (!$('uprn').value && state.uprn) {
+    $('uprn').value = state.uprn;
+  }
+  setTimeout(refresh, state.joining ? 1000 : 3000);
+}
+
+$('network').onchange = showOther;
+
+$('change').onclick = () => {
+  changing = true;
+  refresh();
+};
+
+$('join').onclick = async () => {
+  const ssid = $('network').value || $('other').value.trim();
+  if (!ssid) {
+    $('wifi-msg').textContent = 'Choose a network';
+    return;
+  }
+  const result = await api('/api/join', {ssid, password: $('password').value});
+  if (result.error) {
+    $('wifi-msg').textContent = result.error;
+    return;
+  }
+  changing = false;
+  $('wifi-msg').textContent = 'Connecting to ' + ssid + '...';
+  $('join').disabled = true;
+};
+
+$('scan').onclick = async () => {
+  $('wifi-msg').textContent = 'Scanning...';
+  $('scan').disabled = true;
+  try {
+    showNetworks(await api('/api/scan'));
+    $('wifi-msg').textContent = '';
+  } catch (e) {
+    $('wifi-msg').textContent = 'Scan failed, try again';
+  }
+  $('scan').disabled = false;
+};
+
+$('find').onclick = async () => {
+  const postcode = $('postcode').value.trim();
+  if (!postcode) {
+    $('address-msg').textContent = 'Enter your postcode';
+    return;
+  }
+  $('address-msg').textContent = 'Looking up addresses...';
+  $('find').disabled = true;
+  try {
+    const result = await api('/api/addresses?postcode=' + encodeURIComponent(postcode));
+    const addresses = (result.addresses || []).filter(a => a.uprn);
+    const select = $('addresses');
+    select.innerHTML = '';
+    select.add(new Option('Choose your address', ''));
+    for (const a of addresses) {
+      select.add(new Option(a.address, a.uprn));
+    }
+    $('addresses-label').hidden = !addresses.length;
+    $('address-msg').textContent = result.error || (addresses.length ? '' : 'No addresses found for that postcode');
+  } catch (e) {
+    $('address-msg').textContent = 'Lookup failed, try again';
+  }
+  $('find').disabled = false;
+};
+
+$('addresses').onchange = () => {
+  if ($('addresses').value) {
+    $('uprn').value = $('addresses').value;
+  }
+};
+
+$('save').onclick = async () => {
+  const uprn = $('uprn').value.trim();
+  const result = await api('/api/save', {uprn});
+  if (result.error) {
+    $('address-msg').textContent = result.error;
+    return;
+  }
+  finish('Saved. The display is restarting and will show your bin days in a moment. You can close this page.');
+};
+
+$('cancel').onclick = async () => {
+  await api('/api/cancel', {});
+  finish('Setup cancelled. The display is restarting.');
+};
+
+refresh();
+</script>
+</body>
+</html>

@@ -2,7 +2,7 @@ build/
 build-*/
 sdkconfig
 sdkconfig.old
-main/secrets.h
+main/secrets.h*
 .vscode/
 __pycache__/
 

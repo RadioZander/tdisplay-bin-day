@@ -1,4 +1,6 @@
-// Copy this file to secrets.h and fill in your WiFi details and UPRN.
+// Optional. The setup portal on the device is the usual way to choose the
+// WiFi network and address. To skip it, copy this file to secrets.h and fill
+// in your details: they're used until something is saved from the portal.
 // secrets.h is git-ignored so these stay out of version control.
 #pragma once
 

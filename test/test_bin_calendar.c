@@ -5,6 +5,7 @@
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "bin_calendar.h"
 
 static char *read_file(const char *path)
@@ -102,6 +103,48 @@ static void test_next_and_days_until(void)
     free(html);
 }
 
+typedef struct {
+    int count;
+    char uprns[4][16];
+    char addresses[4][BIN_ADDRESS_MAX_LEN];
+} found_addresses_t;
+
+static void on_address(const char *uprn, const char *address, void *ctx)
+{
+    found_addresses_t *f = ctx;
+    assert(f->count < 4);
+    strcpy(f->uprns[f->count], uprn);
+    strcpy(f->addresses[f->count], address);
+    f->count++;
+}
+
+static void test_addresses(void)
+{
+    // The layout of the postcode search page (cal2.asp), with made-up addresses
+    const char *html =
+        "<select name=\"uprn\" id=\"uprn\">\r\n"
+        "\t\t\t  <option value=\"\" selected=\"selected\" disabled=\"disabled\">Please select address...</option>\r\n"
+        "\t\t\t              <option value='010000000001'>\r\n"
+        "\t\t\t                1 Example Road Horsham West Sussex RH12 0XX \r\n"
+        "              </option>\r\n"
+        "\t\t\t              <option value='200000000002'>\r\n"
+        "\t\t\t                Flat 2 Smith &amp; Sons   House Horsham RH12 0XX \r\n"
+        "              </option>\r\n"
+        "\t\t\t              <option value=\"100000000003\">3 O&#39;Brien Close</option>\r\n"
+        "</select>";
+    found_addresses_t f = {0};
+    assert(bin_address_parse(html, on_address, &f) == 3);
+    assert(strcmp(f.uprns[0], "010000000001") == 0);
+    assert(strcmp(f.addresses[0], "1 Example Road Horsham West Sussex RH12 0XX") == 0);
+    assert(strcmp(f.uprns[1], "200000000002") == 0);
+    assert(strcmp(f.addresses[1], "Flat 2 Smith & Sons House Horsham RH12 0XX") == 0);
+    assert(strcmp(f.uprns[2], "100000000003") == 0);
+    assert(strcmp(f.addresses[2], "3 O'Brien Close") == 0);
+
+    f.count = 0;
+    assert(bin_address_parse("<p>No addresses found</p>", on_address, &f) == 0);
+}
+
 int main(void)
 {
     setenv("TZ", "GMT0BST,M3.5.0/1,M10.5.0", 1);
@@ -109,6 +152,7 @@ int main(void)
     test_changed_and_unknown();
     test_no_collections();
     test_next_and_days_until();
+    test_addresses();
     printf("All bin calendar tests passed\n");
     return 0;
 }

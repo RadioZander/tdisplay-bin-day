@@ -36,6 +36,15 @@ typedef struct {
 // number of collections found (0 if the page has none, or its layout changed).
 int bin_calendar_parse(const char *html, bin_calendar_t *cal);
 
+// Called for each address on the postcode search page
+typedef void (*bin_address_cb_t)(const char *uprn, const char *address, void *ctx);
+
+#define BIN_ADDRESS_MAX_LEN 160
+
+// Parse the postcode search page's HTML, calling `found` for each address.
+// Returns the number of addresses.
+int bin_address_parse(const char *html, bin_address_cb_t found, void *ctx);
+
 // The first collection on or after `today`, or NULL if there isn't one
 const bin_collection_t *bin_calendar_next(const bin_calendar_t *cal, const struct tm *today);
 
@@ -49,6 +58,10 @@ int bin_collection_days_until(const bin_collection_t *c, const struct tm *today)
 // allows it, otherwise plain HTTP. Needs WiFi and the correct time (for the
 // HTTPS certificate check). Returns 0 on success.
 int bin_calendar_fetch(const char *uprn, bin_calendar_t *cal);
+
+// Look up the addresses for a postcode, calling `found` for each. Needs WiFi.
+// Returns the number of addresses, or -1 if the lookup failed.
+int bin_address_lookup(const char *postcode, bin_address_cb_t found, void *ctx);
 
 // "HTTPS" or "HTTP" for the last successful download, or NULL if none yet
 const char *bin_calendar_protocol(void);
