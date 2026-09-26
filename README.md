@@ -130,7 +130,7 @@ cc -Wall -Imain test/test_bin_calendar.c main/bin_calendar.c -lm -o test_bin_cal
 
 ## Hardware
 
-The display driver and board definitions come from [tdisplay-flip-clock](../tdisplay-flip-clock). Everything that differs between the two boards is in `main/board.h`.
+The display driver and board definitions come from [tdisplay-flip-clock](https://github.com/RadioZander/tdisplay-flip-clock). Everything that differs between the two boards is in `main/board.h`.
 
 | | T-Display | T-Display-S3 |
 |---|---|---|
