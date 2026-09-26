@@ -3,6 +3,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -36,6 +37,12 @@ typedef struct {
 // number of collections found (0 if the page has none, or its layout changed).
 int bin_calendar_parse(const char *html, bin_calendar_t *cal);
 
+// Parse the next piece of the page as it downloads, adding to `cal` (which
+// starts with a count of 0). Returns how many characters were used: the
+// rest is the start of a row that's been cut off, to go again with the
+// next piece.
+size_t bin_calendar_parse_more(const char *html, bin_calendar_t *cal);
+
 // Called for each address on the postcode search page
 typedef void (*bin_address_cb_t)(const char *uprn, const char *address, void *ctx);
 
@@ -44,6 +51,23 @@ typedef void (*bin_address_cb_t)(const char *uprn, const char *address, void *ct
 // Parse the postcode search page's HTML, calling `found` for each address.
 // Returns the number of addresses.
 int bin_address_parse(const char *html, bin_address_cb_t found, void *ctx);
+
+// As bin_calendar_parse_more, for the postcode search page: calls `found`
+// for each complete address and adds them to `*count`
+size_t bin_address_parse_more(const char *html, bin_address_cb_t found, void *ctx, int *count);
+
+// Reads the next part of a page into `buf`, up to `size` bytes. Returns the
+// number read, 0 at the end, or -1 on an error.
+typedef int (*bin_read_fn)(char *buf, int size, void *ctx);
+
+// Parses the text so far and returns how many characters it used, like
+// bin_calendar_parse_more
+typedef size_t (*bin_parse_fn)(const char *text, void *ctx);
+
+// Parse a page piece by piece as it's read, using `buf` (`size` bytes) to
+// hold each piece. Needs far less memory than reading the whole page first.
+// Returns false if reading fails.
+bool bin_stream_parse(char *buf, size_t size, bin_read_fn read, void *read_ctx, bin_parse_fn parse, void *parse_ctx);
 
 // The first collection on or after `today`, or NULL if there isn't one
 const bin_collection_t *bin_calendar_next(const bin_calendar_t *cal, const struct tm *today);

@@ -76,13 +76,22 @@ static int compare_dates(const void *a, const void *b)
     return (int)bin_collection_date_key(a) - (int)bin_collection_date_key(b);
 }
 
-int bin_calendar_parse(const char *html, bin_calendar_t *cal)
+size_t bin_calendar_parse_more(const char *html, bin_calendar_t *cal)
 {
-    cal->count = 0;
-    for (const char *row = strstr(html, "<tr"); row && cal->count < BIN_CALENDAR_MAX; row = strstr(row + 3, "<tr")) {
+    // Unless a row is cut off, everything is used apart from the last couple
+    // of characters, which might be the start of "<tr"
+    size_t len = strlen(html);
+    size_t used = len > 2 ? len - 2 : 0;
+    for (const char *row = strstr(html, "<tr"); row; row = strstr(row, "<tr")) {
         const char *end = strstr(row, "</tr>");
         if (!end) {
+            used = row - html; // the rest of the row hasn't arrived yet
             break;
+        }
+        const char *next = end + 5;
+        if (cal->count >= BIN_CALENDAR_MAX) {
+            row = next;
+            continue;
         }
 
         // Rows without a date are headings
@@ -91,22 +100,28 @@ int bin_calendar_parse(const char *html, bin_calendar_t *cal)
         for (const char *p = row; p + 10 <= end && !dated; p++) {
             dated = parse_date(p, &c);
         }
-        if (!dated) {
-            continue;
+        if (dated) {
+            for (const char *p = row; (p = find_before(p, end, "bullet ")); p += 7) {
+                c.bins |= bin_from_colour(p + 7);
+            }
+            // A date with no bullets means the page layout has changed, but
+            // the date is still worth showing
+            if (!c.bins) {
+                c.bins = BIN_OTHER;
+            }
+            c.changed = find_before(row, end, "<strong") || find_before(row, end, "<b>") || find_before(row, end, "<b ");
+            cal->collections[cal->count++] = c;
         }
-
-        for (const char *p = row; (p = find_before(p, end, "bullet ")); p += 7) {
-            c.bins |= bin_from_colour(p + 7);
-        }
-        // A date with no bullets means the page layout has changed, but the
-        // date is still worth showing
-        if (!c.bins) {
-            c.bins = BIN_OTHER;
-        }
-        c.changed = find_before(row, end, "<strong") || find_before(row, end, "<b>") || find_before(row, end, "<b ");
-        cal->collections[cal->count++] = c;
+        row = next;
     }
     qsort(cal->collections, cal->count, sizeof(cal->collections[0]), compare_dates);
+    return used;
+}
+
+int bin_calendar_parse(const char *html, bin_calendar_t *cal)
+{
+    cal->count = 0;
+    bin_calendar_parse_more(html, cal);
     return cal->count;
 }
 
@@ -115,18 +130,27 @@ int bin_calendar_parse(const char *html, bin_calendar_t *cal)
 //   <option value='010000000001'>
 //                 1 Example Road Horsham West Sussex RH12 0XX
 //   </option>
-int bin_address_parse(const char *html, bin_address_cb_t found, void *ctx)
+size_t bin_address_parse_more(const char *html, bin_address_cb_t found, void *ctx, int *count)
 {
     static const struct {
         const char *entity;
         char c;
     } entities[] = {{"&amp;", '&'}, {"&#39;", '\''}, {"&quot;", '"'}, {"&nbsp;", ' '}};
 
-    int count = 0;
+    // Unless an address is cut off, everything is used apart from the last
+    // few characters, which might be the start of "<option"
+    size_t len = strlen(html);
+    size_t used = len > 6 ? len - 6 : 0;
     for (const char *p = strstr(html, "<option"); p; p = strstr(p + 7, "<option")) {
+        // An address is complete once the '<' after it has arrived
         const char *tag_end = strchr(p, '>');
+        const char *text_end = tag_end ? strchr(tag_end + 1, '<') : NULL;
+        if (!text_end) {
+            used = p - html;
+            break;
+        }
         const char *value = strstr(p, "value=");
-        if (!tag_end || !value || value > tag_end) {
+        if (!value || value > tag_end) {
             continue;
         }
         value += 6;
@@ -134,19 +158,19 @@ int bin_address_parse(const char *html, bin_address_cb_t found, void *ctx)
             value++;
         }
         char uprn[16];
-        size_t len = strspn(value, "0123456789");
-        if (len == 0 || len >= sizeof(uprn)) {
+        size_t uprn_len = strspn(value, "0123456789");
+        if (uprn_len == 0 || uprn_len >= sizeof(uprn)) {
             continue; // the "Please select address..." placeholder
         }
-        memcpy(uprn, value, len);
-        uprn[len] = '\0';
+        memcpy(uprn, value, uprn_len);
+        uprn[uprn_len] = '\0';
 
         // The address, with runs of whitespace (including line breaks)
         // collapsed to single spaces
         char address[BIN_ADDRESS_MAX_LEN];
         size_t n = 0;
         bool space = false;
-        for (const char *s = tag_end + 1; *s && *s != '<' && n < sizeof(address) - 1; s++) {
+        for (const char *s = tag_end + 1; s < text_end && n < sizeof(address) - 1; s++) {
             char c = *s;
             if (c == '&') {
                 for (size_t i = 0; i < sizeof(entities) / sizeof(entities[0]); i++) {
@@ -173,9 +197,40 @@ int bin_address_parse(const char *html, bin_address_cb_t found, void *ctx)
             continue;
         }
         found(uprn, address, ctx);
-        count++;
+        (*count)++;
     }
+    return used;
+}
+
+int bin_address_parse(const char *html, bin_address_cb_t found, void *ctx)
+{
+    int count = 0;
+    bin_address_parse_more(html, found, ctx, &count);
     return count;
+}
+
+bool bin_stream_parse(char *buf, size_t size, bin_read_fn read, void *read_ctx, bin_parse_fn parse, void *parse_ctx)
+{
+    size_t len = 0; // unparsed text at the start of buf
+    while (true) {
+        int n = read(buf + len, size - 1 - len, read_ctx);
+        if (n < 0) {
+            return false;
+        }
+        len += n;
+        buf[len] = '\0';
+        size_t used = parse(buf, parse_ctx);
+        if (n == 0) {
+            return true;
+        }
+        // Something too big for the buffer can never be completed, so skip
+        // half of it rather than stall
+        if (used == 0 && len == size - 1) {
+            used = len / 2;
+        }
+        memmove(buf, buf + used, len - used + 1);
+        len -= used;
+    }
 }
 
 const bin_collection_t *bin_calendar_next(const bin_calendar_t *cal, const struct tm *today)

@@ -24,39 +24,29 @@ static const char *TAG = "bin_calendar";
 #define CALENDAR_PAGE "cal_details.asp"
 #define SEARCH_PAGE   "cal2.asp"
 
-// The calendar is about 20 KB, and the postcode search about 14 KB plus
-// 150 bytes per address
-#define MAX_PAGE_SIZE (64 * 1024)
+// Pages are parsed a piece at a time as they download, so the whole page
+// (about 20 KB) is never held in memory. That matters on the original
+// T-Display, where there's no 20 KB block free while setup is running.
+#define PIECE_SIZE 4096
 
 static const char *s_protocol;
 
 #define NVS_NAMESPACE "bin_calendar"
 #define NVS_KEY       "calendar"
 
-// Reads the response body into a new, null-terminated buffer
-static char *read_body(esp_http_client_handle_t client)
+typedef struct {
+    esp_http_client_handle_t client;
+    int total;
+} http_reader_t;
+
+static int read_http(char *buf, int size, void *ctx)
 {
-    char *buf = malloc(MAX_PAGE_SIZE + 1);
-    if (!buf) {
-        ESP_LOGE(TAG, "No memory for the page");
-        return NULL;
+    http_reader_t *r = ctx;
+    int n = esp_http_client_read(r->client, buf, size);
+    if (n > 0) {
+        r->total += n;
     }
-    int len = 0;
-    while (len < MAX_PAGE_SIZE) {
-        int n = esp_http_client_read(client, buf + len, MAX_PAGE_SIZE - len);
-        if (n < 0) {
-            ESP_LOGE(TAG, "Read failed");
-            free(buf);
-            return NULL;
-        }
-        if (n == 0) {
-            break;
-        }
-        len += n;
-    }
-    buf[len] = '\0';
-    ESP_LOGI(TAG, "Downloaded %d bytes", len);
-    return buf;
+    return n;
 }
 
 typedef enum {
@@ -65,7 +55,7 @@ typedef enum {
     FETCH_FAILED,
 } fetch_result_t;
 
-static fetch_result_t post_to(const char *url, const char *body, char **html)
+static fetch_result_t post_to(const char *url, const char *body, bin_parse_fn parse, void *parse_ctx)
 {
     esp_http_client_config_t config = {
         .url = url,
@@ -80,6 +70,7 @@ static fetch_result_t post_to(const char *url, const char *body, char **html)
     esp_http_client_set_header(client, "Content-Type", "application/x-www-form-urlencoded");
 
     fetch_result_t result = FETCH_FAILED;
+    char *buf = NULL;
     int body_len = strlen(body);
     esp_err_t err = esp_http_client_open(client, body_len);
     if (err != ESP_OK) {
@@ -97,50 +88,64 @@ static fetch_result_t post_to(const char *url, const char *body, char **html)
         ESP_LOGE(TAG, "HTTP status %d", status);
         goto done;
     }
-    *html = read_body(client);
-    if (*html) {
-        result = FETCH_OK;
+    buf = malloc(PIECE_SIZE);
+    if (!buf) {
+        ESP_LOGE(TAG, "No memory for reading the page");
+        goto done;
     }
+    http_reader_t reader = {.client = client};
+    if (!bin_stream_parse(buf, PIECE_SIZE, read_http, &reader, parse, parse_ctx)) {
+        ESP_LOGE(TAG, "Read failed");
+        goto done;
+    }
+    ESP_LOGI(TAG, "Downloaded %d bytes", reader.total);
+    result = FETCH_OK;
 
 done:
+    free(buf);
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
     return result;
 }
 
 // POSTs a form to one of the council's pages, over HTTPS if possible and
-// otherwise HTTP. Returns the page, which the caller frees, or NULL.
-static char *post_form(const char *page, const char *body, const char **protocol)
+// otherwise HTTP, parsing the page as it arrives. Returns false if that
+// failed.
+static bool post_form(const char *page, const char *body, bin_parse_fn parse, void *parse_ctx, const char **protocol)
 {
     char url[96];
-    char *html = NULL;
     snprintf(url, sizeof(url), "https://" SITE "%s", page);
     *protocol = "HTTPS";
-    fetch_result_t result = post_to(url, body, &html);
+    // A failed connection happens before any of the page is read, so it's
+    // safe to try again over HTTP with the same parser
+    fetch_result_t result = post_to(url, body, parse, parse_ctx);
     if (result == FETCH_CONNECT_FAILED) {
         ESP_LOGI(TAG, "Falling back to HTTP");
         snprintf(url, sizeof(url), "http://" SITE "%s", page);
         *protocol = "HTTP";
-        post_to(url, body, &html);
+        result = post_to(url, body, parse, parse_ctx);
     }
-    return html;
+    return result == FETCH_OK;
+}
+
+static size_t parse_calendar_piece(const char *text, void *ctx)
+{
+    return bin_calendar_parse_more(text, ctx);
 }
 
 int bin_calendar_fetch(const char *uprn, bin_calendar_t *cal)
 {
     char body[32];
     snprintf(body, sizeof(body), "uprn=%s", uprn);
-    const char *protocol;
-    char *html = post_form(CALENDAR_PAGE, body, &protocol);
-    if (!html) {
-        return -1;
-    }
 
     // Parse into a copy so a bad page leaves the old calendar alone
     static bin_calendar_t parsed;
-    int count = bin_calendar_parse(html, &parsed);
-    free(html);
-    if (count == 0) {
+    parsed.count = 0;
+    const char *protocol;
+    if (!post_form(CALENDAR_PAGE, body, parse_calendar_piece, &parsed, &protocol)) {
+        return -1;
+    }
+    if (parsed.count == 0) {
         ESP_LOGW(TAG, "No collections found. Check the address in setup");
         return -1;
     }
@@ -149,6 +154,18 @@ int bin_calendar_fetch(const char *uprn, bin_calendar_t *cal)
     s_protocol = protocol;
     ESP_LOGI(TAG, "Found %d collections", cal->count);
     return 0;
+}
+
+typedef struct {
+    bin_address_cb_t found;
+    void *ctx;
+    int count;
+} address_lookup_t;
+
+static size_t parse_address_piece(const char *text, void *ctx)
+{
+    address_lookup_t *lookup = ctx;
+    return bin_address_parse_more(text, lookup->found, lookup->ctx, &lookup->count);
 }
 
 int bin_address_lookup(const char *postcode, bin_address_cb_t found, void *ctx)
@@ -168,15 +185,13 @@ int bin_address_lookup(const char *postcode, bin_address_cb_t found, void *ctx)
     body[n] = '\0';
     strlcat(body, "&Submit=Search", sizeof(body));
 
+    address_lookup_t lookup = {.found = found, .ctx = ctx};
     const char *protocol;
-    char *html = post_form(SEARCH_PAGE, body, &protocol);
-    if (!html) {
+    if (!post_form(SEARCH_PAGE, body, parse_address_piece, &lookup, &protocol)) {
         return -1;
     }
-    int count = bin_address_parse(html, found, ctx);
-    free(html);
-    ESP_LOGI(TAG, "Found %d addresses for %s", count, postcode);
-    return count;
+    ESP_LOGI(TAG, "Found %d addresses", lookup.count);
+    return lookup.count;
 }
 
 const char *bin_calendar_protocol(void)

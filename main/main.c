@@ -587,6 +587,10 @@ static void draw_screen(const bin_status_t *st)
     display_flush();
 }
 
+// The setup network's name and password get typed in on a phone, so they're
+// never smaller than 2x, even on the T-Display
+#define PORTAL_CREDENTIALS_SCALE (BOARD_BODY_SCALE > 2 ? BOARD_BODY_SCALE : 2)
+
 static void draw_portal_screen(const char *reason, const char *status)
 {
     char buf[40];
@@ -603,9 +607,9 @@ static void draw_portal_screen(const char *reason, const char *status)
         return;
     }
     display_text_centered(DISPLAY_HEIGHT * 32 / 100, "On your phone, join the WiFi network", 1, COLOR_GREY);
-    display_text_centered(DISPLAY_HEIGHT * 41 / 100, portal_ssid(), BOARD_BODY_SCALE, COLOR_YELLOW);
+    display_text_centered(DISPLAY_HEIGHT * 41 / 100, portal_ssid(), PORTAL_CREDENTIALS_SCALE, COLOR_YELLOW);
     snprintf(buf, sizeof(buf), "Password %s", portal_password());
-    display_text_centered(DISPLAY_HEIGHT * 54 / 100, buf, BOARD_BODY_SCALE, COLOR_WHITE);
+    display_text_centered(DISPLAY_HEIGHT * 54 / 100, buf, PORTAL_CREDENTIALS_SCALE, COLOR_WHITE);
     display_text_centered(DISPLAY_HEIGHT * 68 / 100, "The setup page opens by itself,", 1, COLOR_GREY);
     display_text_centered(DISPLAY_HEIGHT * 75 / 100, "or go to http://" PORTAL_ADDRESS, 1, COLOR_GREY);
     display_text_centered(DISPLAY_HEIGHT - 16, status, 1, COLOR_GREEN);

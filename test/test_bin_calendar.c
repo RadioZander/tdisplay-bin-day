@@ -145,6 +145,98 @@ static void test_addresses(void)
     assert(bin_address_parse("<p>No addresses found</p>", on_address, &f) == 0);
 }
 
+// Reads a string a few characters at a time, like a slow download
+typedef struct {
+    const char *text;
+    size_t pos;
+    int chunk;
+} string_reader_t;
+
+static int read_string(char *buf, int size, void *ctx)
+{
+    string_reader_t *r = ctx;
+    int n = strlen(r->text + r->pos);
+    if (n > r->chunk) {
+        n = r->chunk;
+    }
+    if (n > size) {
+        n = size;
+    }
+    memcpy(buf, r->text + r->pos, n);
+    r->pos += n;
+    return n;
+}
+
+static size_t parse_calendar_piece(const char *text, void *ctx)
+{
+    return bin_calendar_parse_more(text, ctx);
+}
+
+typedef struct {
+    found_addresses_t found;
+    int count;
+    char last_uprn[16];
+} address_stream_t;
+
+static void on_streamed_address(const char *uprn, const char *address, void *ctx)
+{
+    address_stream_t *a = ctx;
+    // Check they arrive in order, once each
+    assert(strcmp(uprn, a->last_uprn) > 0);
+    strcpy(a->last_uprn, uprn);
+    if (a->found.count < 4) {
+        on_address(uprn, address, &a->found);
+    }
+}
+
+static size_t parse_address_piece(const char *text, void *ctx)
+{
+    address_stream_t *a = ctx;
+    return bin_address_parse_more(text, on_streamed_address, a, &a->count);
+}
+
+static void test_streaming(void)
+{
+    // The calendar, in pieces of various sizes, gives the same collections
+    // as parsing the whole page at once
+    char *html = read_file("test/cal_details_sample.html");
+    bin_calendar_t whole = {0};
+    bin_calendar_parse(html, &whole);
+    static const int chunks[] = {1, 7, 64, 500, 5000};
+    static const size_t buffers[] = {1024, 4096};
+    for (size_t b = 0; b < sizeof(buffers) / sizeof(buffers[0]); b++) {
+        for (size_t c = 0; c < sizeof(chunks) / sizeof(chunks[0]); c++) {
+            char buf[4096];
+            string_reader_t reader = {.text = html, .chunk = chunks[c]};
+            bin_calendar_t cal = {0};
+            assert(bin_stream_parse(buf, buffers[b], read_string, &reader, parse_calendar_piece, &cal));
+            assert(cal.count == whole.count);
+            assert(memcmp(cal.collections, whole.collections, sizeof(cal.collections)) == 0);
+        }
+    }
+    free(html);
+
+    // A postcode with lots of addresses
+    static char page[16384];
+    size_t len = snprintf(page, sizeof(page), "<select>\r\n<option value=\"\" disabled>Please select address...</option>\r\n");
+    for (int i = 1; i <= 60; i++) {
+        len += snprintf(page + len, sizeof(page) - len,
+                        "\t\t\t              <option value='2000000000%02d'>\r\n"
+                        "\t\t\t                Flat %d Example Court Horsham West Sussex RH12 0XX \r\n"
+                        "              </option>\r\n", i, i);
+    }
+    snprintf(page + len, sizeof(page) - len, "</select>");
+    for (size_t c = 0; c < sizeof(chunks) / sizeof(chunks[0]); c++) {
+        char buf[1024];
+        string_reader_t reader = {.text = page, .chunk = chunks[c]};
+        address_stream_t a = {0};
+        assert(bin_stream_parse(buf, sizeof(buf), read_string, &reader, parse_address_piece, &a));
+        assert(a.count == 60);
+        assert(strcmp(a.last_uprn, "200000000060") == 0);
+        assert(strcmp(a.found.addresses[0], "Flat 1 Example Court Horsham West Sussex RH12 0XX") == 0);
+    }
+}
+
 int main(void)
 {
     setenv("TZ", "GMT0BST,M3.5.0/1,M10.5.0", 1);
@@ -153,6 +245,7 @@ int main(void)
     test_no_collections();
     test_next_and_days_until();
     test_addresses();
+    test_streaming();
     printf("All bin calendar tests passed\n");
     return 0;
 }

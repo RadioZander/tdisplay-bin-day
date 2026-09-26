@@ -87,8 +87,48 @@ static bool read_body(httpd_req_t *req, char *buf, size_t size)
     return true;
 }
 
-// Sends `s` as a JSON string, quotes included
-static void send_json_string(httpd_req_t *req, const char *s)
+// Collects a JSON reply and sends it in blocks. Sending lots of small pieces
+// is slow, as each one waits on the phone. The web server handles one
+// request at a time, so a single writer is enough.
+typedef struct {
+    httpd_req_t *req;
+    size_t len;
+    char buf[1024];
+} json_writer_t;
+
+static json_writer_t s_json;
+
+static void json_begin(httpd_req_t *req)
+{
+    s_json.req = req;
+    s_json.len = 0;
+    httpd_resp_set_type(req, "application/json");
+}
+
+static void json_flush(void)
+{
+    if (s_json.len) {
+        httpd_resp_send_chunk(s_json.req, s_json.buf, s_json.len);
+        s_json.len = 0;
+    }
+}
+
+static void json_raw(const char *s)
+{
+    size_t n = strlen(s);
+    if (s_json.len + n > sizeof(s_json.buf)) {
+        json_flush();
+    }
+    if (n > sizeof(s_json.buf)) {
+        httpd_resp_send_chunk(s_json.req, s, n);
+        return;
+    }
+    memcpy(s_json.buf + s_json.len, s, n);
+    s_json.len += n;
+}
+
+// `s` as a JSON string, quotes included
+static void json_string(const char *s)
 {
     char buf[BIN_ADDRESS_MAX_LEN * 2 + 3];
     size_t n = 0;
@@ -106,7 +146,13 @@ static void send_json_string(httpd_req_t *req, const char *s)
     }
     buf[n++] = '"';
     buf[n] = '\0';
-    httpd_resp_sendstr_chunk(req, buf);
+    json_raw(buf);
+}
+
+static esp_err_t json_end(void)
+{
+    json_flush();
+    return httpd_resp_send_chunk(s_json.req, NULL, 0);
 }
 
 static esp_err_t send_json(httpd_req_t *req, const char *json)
@@ -149,26 +195,26 @@ static esp_err_t state_handler(httpd_req_t *req)
 {
     check_join();
     char buf[64];
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr_chunk(req, "{\"ssid\":");
-    send_json_string(req, s_config.ssid);
+    json_begin(req);
+    json_raw("{\"ssid\":");
+    json_string(s_config.ssid);
     snprintf(buf, sizeof(buf), ",\"connected\":%s,\"joining\":", wifi_connected() && !s_joining ? "true" : "false");
-    httpd_resp_sendstr_chunk(req, buf);
-    send_json_string(req, s_joining ? s_join_ssid : "");
-    httpd_resp_sendstr_chunk(req, ",\"error\":");
-    send_json_string(req, s_join_error);
-    httpd_resp_sendstr_chunk(req, ",\"uprn\":");
-    send_json_string(req, s_config.uprn);
-    httpd_resp_sendstr_chunk(req, ",\"networks\":[");
+    json_raw(buf);
+    json_string(s_joining ? s_join_ssid : "");
+    json_raw(",\"error\":");
+    json_string(s_join_error);
+    json_raw(",\"uprn\":");
+    json_string(s_config.uprn);
+    json_raw(",\"networks\":[");
     for (int i = 0; i < s_network_count; i++) {
-        httpd_resp_sendstr_chunk(req, i ? ",{\"ssid\":" : "{\"ssid\":");
-        send_json_string(req, (const char *)s_networks[i].ssid);
+        json_raw(i ? ",{\"ssid\":" : "{\"ssid\":");
+        json_string((const char *)s_networks[i].ssid);
         snprintf(buf, sizeof(buf), ",\"rssi\":%d,\"open\":%s}", s_networks[i].rssi,
                  s_networks[i].authmode == WIFI_AUTH_OPEN ? "true" : "false");
-        httpd_resp_sendstr_chunk(req, buf);
+        json_raw(buf);
     }
-    httpd_resp_sendstr_chunk(req, "]}");
-    return httpd_resp_sendstr_chunk(req, NULL);
+    json_raw("]}");
+    return json_end();
 }
 
 static esp_err_t scan_handler(httpd_req_t *req)
@@ -200,12 +246,11 @@ static esp_err_t join_handler(httpd_req_t *req)
 
 static void send_address(const char *uprn, const char *address, void *ctx)
 {
-    httpd_req_t *req = ctx;
-    httpd_resp_sendstr_chunk(req, "{\"uprn\":");
-    send_json_string(req, uprn);
-    httpd_resp_sendstr_chunk(req, ",\"address\":");
-    send_json_string(req, address);
-    httpd_resp_sendstr_chunk(req, "},");
+    json_raw("{\"uprn\":");
+    json_string(uprn);
+    json_raw(",\"address\":");
+    json_string(address);
+    json_raw("},");
 }
 
 // GET ?postcode=... -> {"addresses": [{"uprn": "...", "address": "..."}, ...]}
@@ -222,13 +267,13 @@ static esp_err_t addresses_handler(httpd_req_t *req)
     if (!wifi_connected() || s_joining) {
         return send_json(req, "{\"error\":\"Connect to your WiFi first\"}");
     }
-    httpd_resp_set_type(req, "application/json");
-    httpd_resp_sendstr_chunk(req, "{\"addresses\":[");
-    int count = bin_address_lookup(postcode, send_address, req);
+    json_begin(req);
+    json_raw("{\"addresses\":[");
+    int count = bin_address_lookup(postcode, send_address, NULL);
     // Every address ends with a comma, so finish the list with an empty
     // object that the page skips
-    httpd_resp_sendstr_chunk(req, count < 0 ? "{}],\"error\":\"The council's website didn't answer\"}" : "{}]}");
-    return httpd_resp_sendstr_chunk(req, NULL);
+    json_raw(count < 0 ? "{}],\"error\":\"Lookup failed, please try again\"}" : "{}]}");
+    return json_end();
 }
 
 // POST uprn=...
@@ -322,7 +367,9 @@ void portal_start(const device_config_t *current)
     }
     s_password[8] = '\0';
 
-    // Quiet the web server's warnings: the redirects make lots of them
+    // Quiet the web server's warnings, which the redirects make lots of, and
+    // the DNS server's note of every lookup
+    esp_log_level_set("example_dns_redirect_server", ESP_LOG_WARN);
     esp_log_level_set("httpd_uri", ESP_LOG_ERROR);
     esp_log_level_set("httpd_txrx", ESP_LOG_ERROR);
     esp_log_level_set("httpd_parse", ESP_LOG_ERROR);
