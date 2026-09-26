@@ -1,0 +1,11 @@
+# Settings shared by both boards. Board-specific settings are in
+# sdkconfig.defaults.<target>, which ESP-IDF loads on top of this file.
+
+# The council's certificate chains to DigiCert Global Root G2, which is in
+# the common CA bundle. (HTTPS to the council currently fails anyway, see
+# main/bin_fetch.c, but this is ready for when they update their server.)
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_CMN=y
+
+# WiFi plus HTTPS only just fits the default 1 MB app partition
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

@@ -1,0 +1,2 @@
+# T-Display-S3 (loaded automatically for the esp32s3 target)
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y

@@ -1,0 +1,10 @@
+build/
+build-*/
+sdkconfig
+sdkconfig.old
+main/secrets.h
+.vscode/
+__pycache__/
+
+# Host test binary
+test_bin_calendar

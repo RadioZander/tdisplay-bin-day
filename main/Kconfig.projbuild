@@ -1,0 +1,27 @@
+menu "Bin Day Configuration"
+
+    config BIN_NTP_SERVER
+        string "NTP server"
+        default "pool.ntp.org"
+
+    config BIN_TIMEZONE
+        string "Timezone (POSIX TZ string)"
+        default "GMT0BST,M3.5.0/1,M10.5.0"
+        help
+            POSIX TZ string, including daylight saving rules. The default is
+            UK time.
+
+    config BIN_BRIGHTNESS
+        int "Backlight brightness (%)"
+        range 10 100
+        default 60
+
+    config BIN_PREVIEW
+        bool "Preview mode"
+        default n
+        help
+            For checking the screen: pretends the date is the day before, and
+            then the day of, each of the next two collections, changing every
+            5 seconds. The calendar is still downloaded as normal.
+
+endmenu
