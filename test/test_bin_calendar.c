@@ -1,7 +1,7 @@
 // Host test for the calendar parser. Run from the project root:
 //   cc -Wall -Imain test/test_bin_calendar.c main/bin_calendar.c -lm -o test_bin_calendar && ./test_bin_calendar
-// cal_details_sample.html is a saved copy of the council's page with the
-// address replaced.
+// cal_details_sample.html is the part of the council's calendar page the
+// parser reads, with the address replaced.
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>

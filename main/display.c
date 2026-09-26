@@ -40,7 +40,8 @@ static bool on_flush_done(esp_lcd_panel_io_handle_t io, esp_lcd_panel_io_event_d
     return woken == pdTRUE;
 }
 
-// Classic 5x7 font from Adafruit GFX (glcdfont.c, BSD licence, see README),
+// Classic 5x7 font from Adafruit GFX (glcdfont.c), Copyright (c) 2012 Adafruit
+// Industries, BSD licence: see LICENSES/Adafruit-GFX.txt for the full terms.
 // ASCII 0x20..0x7E. Five column bytes per glyph, LSB = top row.
 static const uint8_t font5x7[][5] = {
     {0x00, 0x00, 0x00, 0x00, 0x00}, {0x00, 0x00, 0x5F, 0x00, 0x00}, {0x00, 0x07, 0x00, 0x07, 0x00}, {0x14, 0x7F, 0x14, 0x7F, 0x14},

@@ -122,7 +122,7 @@ idf.py -B build-s3 -D SDKCONFIG=build-s3/sdkconfig -D IDF_TARGET=esp32s3 flash m
 
 ## Testing the parsers
 
-The parsers for the calendar and the postcode search are plain C, so they can be tested on a PC, using a saved copy of the council's calendar page (with the address replaced) and made-up addresses:
+The parsers for the calendar and the postcode search are plain C, so they can be tested on a PC, using the collections table from the council's calendar page (with the address replaced) and made-up addresses:
 
 ```bash
 cc -Wall -Imain test/test_bin_calendar.c main/bin_calendar.c -lm -o test_bin_calendar && ./test_bin_calendar
@@ -144,4 +144,6 @@ This project is released under the [MIT Licence](LICENSE).
 It includes material from other projects under their own licences:
 
 - **DNS server** in `components/dns_server`: from ESP-IDF's captive portal example, Copyright (c) 2021-2025 Espressif Systems, public domain (Unlicense or CC0).
-- **5×7 text font** in `main/display.c`: from the [Adafruit GFX Library](https://github.com/adafruit/Adafruit-GFX-Library) (`glcdfont.c`), Copyright (c) 2012 Adafruit Industries, BSD licence.
+- **5×7 text font** in `main/display.c`: from the [Adafruit GFX Library](https://github.com/adafruit/Adafruit-GFX-Library) (`glcdfont.c`), Copyright (c) 2012 Adafruit Industries, BSD licence. The full licence is in [LICENSES/Adafruit-GFX.txt](LICENSES/Adafruit-GFX.txt).
+
+The built firmware also contains ESP-IDF and the libraries that come with it (such as FreeRTOS, lwIP and Mbed TLS), each under its own licence. If you hand out flashed devices, include the notices listed on Espressif's [Copyrights and Licenses](https://docs.espressif.com/projects/esp-idf/en/latest/esp32/COPYRIGHT.html) page.
